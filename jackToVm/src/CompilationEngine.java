@@ -1,18 +1,31 @@
 import java.io.File;
+import java.io.FileWriter;
 
-public class CompilationEngine2 {
+public class CompilationEngine {
     private JackTokenizer tokenizer;
     private String xml = "";
 
-    public CompilationEngine2(File inFile, File outFile) throws Exception {
+    public CompilationEngine(File inFile, File outFile) throws Exception {
         // create a tokenizer object
         tokenizer = new JackTokenizer(inFile);
+
+        // move tokenizer to first token
+        ensureMoreTokensAndAdvance();
 
         // at this level of the program, we are outside all class declarations,
         // so if the tokenizer has more tokens, it had better be a class declaration, so compile the class
         while (tokenizer.hasMoreTokens()) {
            compileClass();
         }
+
+        System.out.println("class compiled");
+
+        // write output file
+        FileWriter writer = new FileWriter(outFile);
+        writer.write(xml);
+        writer.close();
+
+        System.out.println("file written");
     }
 
     /**
@@ -48,7 +61,9 @@ public class CompilationEngine2 {
 
         ensureSymbolValueAndAddXml('}');
 
-        ensureMoreTokensAndAdvance();
+        if (tokenizer.hasMoreTokens()) {
+            tokenizer.advance();
+        }
 
         addToXml("</class>");
     }
@@ -62,6 +77,7 @@ public class CompilationEngine2 {
         addToXml("<subroutineDec><keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
 
         // subroutine dec parentheticals
+        addTokenTypeToXML(true);
         addTokenIdentifierToXml(true);
         ensureSymbolValueAndAddXml('(', true);
         compileParameterList();
@@ -84,14 +100,20 @@ public class CompilationEngine2 {
     public void compileParameterList() throws Exception {
         addToXml("<parameterList>");
 
-        ensureTokenType("SYMBOL", true);
-
+        ensureTokenType("SYMBOL", false);
         while (tokenizer.symbol() != ')') {
-            addTokenTypeToXML(true);
+            ensureMoreTokensAndAdvance();
+            // if this is the close parenthesis, we're done here
+            if (tokenizer.tokenType().equals("SYMBOL") && tokenizer.symbol() == ')') continue;
+            // if it isn't ), it should be a type
+            addTokenTypeToXML(false);
             addTokenIdentifierToXml(true);
             ensureTokenType("SYMBOL", true);
             if (tokenizer.symbol() != ',' && tokenizer.symbol() != ')') {
                 throw new Exception("UNEXPECTED TOKEN: was expecting ',' or ')' but found " + tokenizer.symbol());
+            }
+            if (tokenizer.symbol() == ',') {
+                addToXml("<symbol>,</symbol>");
             }
         }
 
@@ -100,7 +122,8 @@ public class CompilationEngine2 {
 
     /**
      * Tokenizer index should be on the first token of this term once this function is entered.
-     * @postcondition: advances tokenizer to first token after expression compiled
+     * @precondition: tokenizer advanced to first token of expression
+     * @postcondition: tokenizer advanced to first token after expression
      * @throws Exception
      */
     public void compileExpression() throws Exception {
@@ -108,8 +131,11 @@ public class CompilationEngine2 {
 
         compileTerm();
 
-        while (tokenizer.tokenType().equals("SYMBOL")) {
-            String symbolName;
+        boolean isBinaryOperation = true; // assume the symbol we encounter is a binary operation
+
+        // if this is a symbol [that doesn't end the line of code, ;, or a syntactic construction, like )]
+        while (tokenizer.tokenType().equals("SYMBOL") && isBinaryOperation) {
+            String symbolName = "";
 
             switch (tokenizer.symbol()) {
                 case '&':
@@ -130,11 +156,16 @@ public class CompilationEngine2 {
                     symbolName = "" + tokenizer.symbol();
                     break;
                 default:
-                    throw new Exception("ERROR: unexpected symbol found in expression where the only symbol allowed is a binary operator");
+                    isBinaryOperation = false; // if it wasn't one of these symbols, it's not a binary operation
+                    break;
             }
 
-            addToXml("<symbol>" + symbolName + "</symbol>");
-            ensureMoreTokensAndAdvance();
+            // if this is a binary operation, add its symbol to the xml and compile the term after it
+            if (isBinaryOperation) {
+                addToXml("<symbol>" + symbolName + "</symbol>");
+                ensureMoreTokensAndAdvance();
+                compileTerm();
+            }
         }
 
 
@@ -163,6 +194,7 @@ public class CompilationEngine2 {
                 // the only other token that may start a term is a ( open parenthesis
                 else {
                     ensureSymbolValueAndAddXml('(');
+                    ensureMoreTokensAndAdvance();
                     compileExpression();
                     ensureSymbolValueAndAddXml(')');
                     ensureMoreTokensAndAdvance();
@@ -188,11 +220,11 @@ public class CompilationEngine2 {
             case "KEYWORD":
                 // only the following keywords are allowed
                 switch (tokenizer.keyWord()) {
-                    case "true":
-                    case "false":
-                    case "null":
-                    case "this":
-                        addToXml("<keyword>" + tokenizer.keyWord() + "</keyword>");
+                    case "TRUE":
+                    case "FALSE":
+                    case "NULL":
+                    case "THIS":
+                        addToXml("<keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
                         ensureMoreTokensAndAdvance();
                         break;
 
@@ -221,24 +253,27 @@ public class CompilationEngine2 {
             ensureTokenType("KEYWORD");
             switch (tokenizer.keyWord()) {
                 case "LET":
+                    compileLet();
                     break;
                 case "IF":
                     compileIf();
                     break;
                 case "VAR":
+                    compileVarDec();
                     break;
                 case "WHILE":
+                    compileWhile();
                     break;
                 case "DO":
+                    compileDo();
                     break;
                 case "RETURN":
+                    compileReturn();
                     break;
                 default:
                     throw new Exception("ERROR: invalid keyword at beginning of statement in a subroutine declaration.");
             }
         }
-
-        ensureMoreTokensAndAdvance();
 
         addToXml("</statements>");
     }
@@ -271,6 +306,7 @@ public class CompilationEngine2 {
 
         ensureSymbolValueAndAddXml(')', false);
         ensureSymbolValueAndAddXml(';', true);
+        ensureMoreTokensAndAdvance();
 
         addToXml("</doStatement>");
     }
@@ -284,8 +320,11 @@ public class CompilationEngine2 {
         addToXml("<expressionList>");
         while (!(tokenizer.tokenType().equals("SYMBOL") && tokenizer.symbol() == ')')) {
             compileExpression();
-            ensureSymbolValueAndAddXml(',', true);
-            ensureMoreTokensAndAdvance();
+            ensureTokenType("SYMBOL");
+            if (tokenizer.symbol() != ')') {
+                ensureSymbolValueAndAddXml(',', false);
+                ensureMoreTokensAndAdvance();
+            }
         }
         addToXml("</expressionList>");
     }
@@ -299,7 +338,7 @@ public class CompilationEngine2 {
         addToXml("<letStatement><keyword>let</keyword>");
 
         // this statement looks like:
-        // let IDENTIFIER||this([EXPRESSION])? (.IDENTIFIER) = EXPRESSION;
+        // let IDENTIFIER||this(([EXPRESSION])* (.IDENTIFIER)*)* = EXPRESSION;
 
         ensureMoreTokensAndAdvance();
         if (tokenizer.tokenType().equals("KEYWORD")) {
@@ -318,6 +357,12 @@ public class CompilationEngine2 {
         if (tokenizer.tokenType().equals("SYMBOL") && (tokenizer.symbol() == '[' || tokenizer.symbol() == '.')) {
             compileArrayIndexingAndClassMembershipNotation();
         }
+
+        ensureSymbolValueAndAddXml('=', false);
+        ensureMoreTokensAndAdvance();
+        compileExpression();
+        ensureSymbolValueAndAddXml(';', false);
+        ensureMoreTokensAndAdvance();
 
         addToXml("</letStatement>");
     }
@@ -411,8 +456,9 @@ public class CompilationEngine2 {
      * @throws Exception
      */
     public void compileClassVarDec() throws Exception {
-        addToXml("<classVarDec></keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
+        addToXml("<classVarDec><keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
 
+        ensureMoreTokensAndAdvance();
         compileVarDecList();
 
         addToXml("</classVarDec>");
@@ -446,6 +492,8 @@ public class CompilationEngine2 {
             }
             addToXml("</symboL>");
         }
+
+        ensureMoreTokensAndAdvance();
     }
 
     /**
@@ -458,6 +506,7 @@ public class CompilationEngine2 {
 
         // should open parenthesis for condition here
         ensureSymbolValueAndAddXml('(', true);
+        ensureMoreTokensAndAdvance();
         // expression of the condition
         compileExpression();
         // close condition
@@ -545,6 +594,7 @@ public class CompilationEngine2 {
                     case "INT":
                     case "BOOLEAN":
                     case "CHAR":
+                    case "VOID":
                         addToXml("<keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
                         break;
                     default: // if it is a keyword but not one of the enumerated options, throw an error
@@ -603,7 +653,6 @@ public class CompilationEngine2 {
      */
     private void addToXml(String text) {
         xml += text;
-        System.out.println(xml);
     }
 
 }

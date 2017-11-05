@@ -1,7 +1,7 @@
 import java.io.File;
 
 public class JackAnalyzer {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         // check for proper usage
         if (args.length != 1) {
             System.out.println("IMPROPER USAGE!");
@@ -27,7 +27,7 @@ public class JackAnalyzer {
      * Creates an out file and compiles the .jack in file into it.
      * @param inFile - the file to compile
      */
-    private static void createOutFileAndCompile(File inFile) {
+    private static void createOutFileAndCompile(File inFile) throws Exception {
         String inFileName = inFile.getName();
         String outFileName = inFileName.substring(0, inFileName.indexOf(".jack")) + ".xml";
 
@@ -45,7 +45,7 @@ public class JackAnalyzer {
      * @param inFile - the file to read .jack code from
      * @param outFile - the file to write the compiled .vm code to
      */
-    private static void compileFile(File inFile, File outFile) {
-
+    private static void compileFile(File inFile, File outFile) throws Exception {
+        CompilationEngine compiler = new CompilationEngine(inFile, outFile);
     }
 }
