@@ -4,6 +4,8 @@ import java.io.FileWriter;
 public class CompilationEngine {
     private JackTokenizer tokenizer;
     private String xml = "";
+    private SymbolTable symbolTable = new SymbolTable();
+    private VMWriter vmWriter;
 
     public CompilationEngine(File inFile, File outFile) throws Exception {
         // create a tokenizer object
@@ -11,6 +13,8 @@ public class CompilationEngine {
 
         // move tokenizer to first token
         ensureMoreTokensAndAdvance();
+
+         vmWriter = new VMWriter(outFile);
 
         // at this level of the program, we are outside all class declarations,
         // so if the tokenizer has more tokens, it had better be a class declaration, so compile the class
@@ -20,12 +24,15 @@ public class CompilationEngine {
 
         System.out.println("class compiled");
 
+        System.out.println("VM CODE:");
+        vmWriter.printVMCode();
+
         // write output file
         FileWriter writer = new FileWriter(outFile);
         writer.write(xml);
         writer.close();
 
-        System.out.println("file written");
+        System.out.println("file written with XML");
     }
 
     /**
@@ -37,7 +44,7 @@ public class CompilationEngine {
     public void compileClass() throws Exception {
         addToXml("<class><keyword>class</keyword>");
 
-        addTokenIdentifierToXml(true);
+        getTokenIdentifierAndAddToXml(true);
         ensureSymbolValueAndAddXml('{', true);
 
         // for every block of code until we reach the } ending the class:
@@ -76,9 +83,11 @@ public class CompilationEngine {
     public void compileSubroutine() throws Exception {
         addToXml("<subroutineDec><keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
 
+        symbolTable.startSubroutine();
+
         // subroutine dec parentheticals
-        addTokenTypeToXML(true);
-        addTokenIdentifierToXml(true);
+        getTokenTypeNameAndAddToXml(true);
+        getTokenIdentifierAndAddToXml(true);
         ensureSymbolValueAndAddXml('(', true);
         compileParameterList();
         ensureSymbolValueAndAddXml(')');
@@ -106,8 +115,13 @@ public class CompilationEngine {
             // if this is the close parenthesis, we're done here
             if (tokenizer.tokenType().equals("SYMBOL") && tokenizer.symbol() == ')') continue;
             // if it isn't ), it should be a type
-            addTokenTypeToXML(false);
-            addTokenIdentifierToXml(true);
+            String type = getTokenTypeNameAndAddToXml(false);
+
+            String identifier = getTokenIdentifierAndAddToXml(true);
+
+            // add this argument to the symbol table
+            symbolTable.define(identifier, type, "ARG");
+
             ensureTokenType("SYMBOL", true);
             if (tokenizer.symbol() != ',' && tokenizer.symbol() != ')') {
                 throw new Exception("UNEXPECTED TOKEN: was expecting ',' or ')' but found " + tokenizer.symbol());
@@ -136,23 +150,43 @@ public class CompilationEngine {
         // if this is a symbol [that doesn't end the line of code, ;, or a syntactic construction, like )]
         while (tokenizer.tokenType().equals("SYMBOL") && isBinaryOperation) {
             String symbolName = "";
+            String command = "";
 
             switch (tokenizer.symbol()) {
                 case '&':
                     symbolName = "&amp;";
+                    command = "and";
                     break;
                 case '<':
                     symbolName = "&lt;";
+                    command = "lt";
                     break;
                 case '>':
                     symbolName = "&gt;";
+                    command = "gt";
                     break;
                 case '+':
+                    command = "add";
+                    symbolName = "" + tokenizer.symbol();
+                    break;
                 case '-':
+                    command = "sub";
+                    symbolName = "" + tokenizer.symbol();
+                    break;
                 case '*':
+                    command = "call Math.multiply 2";
+                    symbolName = "" + tokenizer.symbol();
+                    break;
                 case '/':
+                    command = "call Math.divide 2";
+                    symbolName = "" + tokenizer.symbol();
+                    break;
                 case '|':
+                    command = "or";
+                    symbolName = "" + tokenizer.symbol();
+                    break;
                 case '=':
+                    command = "eq";
                     symbolName = "" + tokenizer.symbol();
                     break;
                 default:
@@ -165,6 +199,9 @@ public class CompilationEngine {
                 addToXml("<symbol>" + symbolName + "</symbol>");
                 ensureMoreTokensAndAdvance();
                 compileTerm();
+
+                // now that the two operatee terms have been written, write the command
+                vmWriter.writeArithmetic(command);
             }
         }
 
@@ -188,8 +225,20 @@ public class CompilationEngine {
                 // then advance and compile the term it is operating on
                 if (tokenizer.symbol() == '-' || tokenizer.symbol() == '~') {
                     addToXml("<symbol>" + tokenizer.symbol() + "</symbol>");
+
                     ensureMoreTokensAndAdvance();
                     compileTerm();
+
+                    // write the VM code for the unary operation
+                    switch (tokenizer.symbol()) {
+                        case '-':
+                            vmWriter.writeArithmetic("neg");
+                            break;
+                        case '~':
+                            vmWriter.writeArithmetic("not");
+                            break;
+                    }
+
                 }
                 // the only other token that may start a term is a ( open parenthesis
                 else {
@@ -201,26 +250,42 @@ public class CompilationEngine {
                     break;
                 }
             case "INT_CONST":
-                addToXml("<integerConstant>" + tokenizer.intVal() + "</integerConstant>");
+                int number = tokenizer.intVal();
+                addToXml("<integerConstant>" + number + "</integerConstant>");
+                vmWriter.writePush("constant", number);
                 ensureMoreTokensAndAdvance();
                 break;
             case "STRING_CONST":
                 addToXml("<stringConstant>" + tokenizer.stringVal() + "</stringConstant>");
+                // TODO: VM CODE FOR STRING CONSTANTS
                 ensureMoreTokensAndAdvance();
                 break;
             case "IDENTIFIER":
-                addTokenIdentifierToXml(false);
+                String identifier = tokenizer.identifier();
+                addToXml("<identifier>" + identifier + "</identifier>");
+
+                vmWriter.writePush(SymbolTable.convertSegmentName(symbolTable.kindOf(identifier)), symbolTable.indexOf(identifier));
 
                 // if it is an identifier, compile possible . class membership notation and [] array indexing notation
                 ensureMoreTokensAndAdvance();
                 if (tokenizer.tokenType().equals("SYMBOL") && (tokenizer.symbol() == '[' || tokenizer.symbol() == '.')) {
-                    compileArrayIndexingAndClassMembershipNotation();
+                    compileArrayIndexingAndClassMembershipNotation(); // TODO: HANDLE ARRAYS VM CODE
                 }
+
+                if (tokenizer.tokenType().equals("SYMBOL") && tokenizer.symbol() == '(') {
+                    addToXml("<symbol>(</symbol>");
+                    ensureMoreTokensAndAdvance();
+                    compileExpressionList();
+                    ensureSymbolValueAndAddXml(')');
+                    ensureMoreTokensAndAdvance();
+                }
+
                 break;
             case "KEYWORD":
                 // only the following keywords are allowed
                 switch (tokenizer.keyWord()) {
                     case "TRUE":
+                        vmWriter.writePush("constant", -1);
                     case "FALSE":
                     case "NULL":
                     case "THIS":
@@ -287,14 +352,14 @@ public class CompilationEngine {
         addToXml("<doStatement><keyword>do</keyword>");
 
         // the first token should be a class/object identifier for function or class/obj with function to call
-        addTokenIdentifierToXml(true);
+        getTokenIdentifierAndAddToXml(true);
 
         // next token is either . [in Object.function()] or ( [in function()]
         ensureTokenType("SYMBOL", true);
         if (tokenizer.symbol() == '.') {
             addToXml("<symbol>.</symbol>");
             // add function identifier to xml
-            addTokenIdentifierToXml(true);
+            getTokenIdentifierAndAddToXml(true);
 
             ensureMoreTokensAndAdvance();
         }
@@ -349,7 +414,7 @@ public class CompilationEngine {
             addToXml("<keyword>this</keyword>");
         }
         else {
-            addTokenIdentifierToXml(false);
+            getTokenIdentifierAndAddToXml(false);
         }
 
         ensureTokenType("SYMBOL", true);
@@ -380,7 +445,7 @@ public class CompilationEngine {
         while (tokenizer.tokenType().equals("SYMBOL") && (tokenizer.symbol() == '[' || tokenizer.symbol() == '.')) {
             if (tokenizer.symbol() == '.') {
                 addToXml("<symbol>.</symbol>");
-                addTokenIdentifierToXml(true);
+                getTokenIdentifierAndAddToXml(true);
                 ensureMoreTokensAndAdvance();
             }
             else if (tokenizer.symbol() == '[') {
@@ -426,12 +491,14 @@ public class CompilationEngine {
         addToXml("<whileStatement><keyword>while</keyword>");
 
         ensureSymbolValueAndAddXml('(', true);
+        ensureMoreTokensAndAdvance();
         compileExpression();
-        ensureSymbolValueAndAddXml(')', true);
+        ensureSymbolValueAndAddXml(')', false);
 
         ensureSymbolValueAndAddXml('{', true);
         compileStatements();
-        ensureSymbolValueAndAddXml('}', true);
+        ensureSymbolValueAndAddXml('}', false);
+        ensureMoreTokensAndAdvance();
 
         addToXml("</whileStatement>");
     }
@@ -445,7 +512,7 @@ public class CompilationEngine {
         addToXml("<varDec><keyword>var</keyword>");
 
         ensureMoreTokensAndAdvance();
-        compileVarDecList();
+        compileVarDecList("VAR");
 
         addToXml("</varDec>");
     }
@@ -456,10 +523,11 @@ public class CompilationEngine {
      * @throws Exception
      */
     public void compileClassVarDec() throws Exception {
-        addToXml("<classVarDec><keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
+        String varKind = tokenizer.getCurrentToken();
+        addToXml("<classVarDec><keyword>" + varKind.toLowerCase() + "</keyword>");
 
         ensureMoreTokensAndAdvance();
-        compileVarDecList();
+        compileVarDecList(varKind);
 
         addToXml("</classVarDec>");
     }
@@ -467,18 +535,21 @@ public class CompilationEngine {
     /**
      * Compiles a list of variables being declared, ex. var String a, b, c;
      * @precondition - tokenizer advanced to type term at beginning of list
-     * @postconditino - tokenizer advanced past ; at end of statement
+     * @postcondition - tokenizer advanced past ; at end of statement
+     * @param kind - the type of the variable being declared (FIELD, STATIC, VAR)
      * @throws Exception
      */
-    private void compileVarDecList() throws Exception {
+    private void compileVarDecList(String kind) throws Exception {
         // multiple vars might be declared (ex. field int x, int y;) so loop until we reach a semicolon
         boolean moreVariablesBeingDeclared = true;
 
         // the type of the variable being declared
-        addTokenTypeToXML(false);
+        String type = getTokenTypeNameAndAddToXml(false);
 
         while (moreVariablesBeingDeclared) {
-            addTokenIdentifierToXml(true);
+            ensureTokenType("IDENTIFIER", true);
+            symbolTable.define(tokenizer.identifier(), type, kind);
+            addToXml("<identifier>" + tokenizer.identifier() + "</identifier>");
 
             ensureTokenType("SYMBOL", true);
             addToXml("<symbol>");
@@ -549,8 +620,6 @@ public class CompilationEngine {
         tokenizer.advance();
     }
 
-
-
     /**
      * Throws an error if the type of the current token is not that type provided to the function.
      * If checkNextToken is true, this ensures there is another token, advances to it, and then performs the check.
@@ -580,12 +649,15 @@ public class CompilationEngine {
 
     /**
      * Add the next token, (which is a token identifying a type -- eg. int, char, Bicycle [a class]) to the XML code.
+     * @returns a string containing the keyword or identifier that is the type
      * @throws Exception
      */
-    private void addTokenTypeToXML(boolean moveToNextToken) throws Exception {
+    private String getTokenTypeNameAndAddToXml(boolean moveToNextToken) throws Exception {
         if (moveToNextToken) {
             ensureMoreTokensAndAdvance();
         }
+
+        String type = "";
 
         // next token should either be a keyword, like int or boolean, or an identifier of a user-defined type
         switch (tokenizer.tokenType()) {
@@ -595,18 +667,22 @@ public class CompilationEngine {
                     case "BOOLEAN":
                     case "CHAR":
                     case "VOID":
-                        addToXml("<keyword>" + tokenizer.keyWord().toLowerCase() + "</keyword>");
+                        type = tokenizer.keyWord();
+                        addToXml("<keyword>" + type.toLowerCase() + "</keyword>");
                         break;
                     default: // if it is a keyword but not one of the enumerated options, throw an error
-                        throw new Exception("SYNTAX ERROR: invalid keyword in field variable declaration.");
+                        throw new Exception("SYNTAX ERROR: invalid keyword in field variable declaration: " + tokenizer.keyWord());
                 }
                 break;
             case "IDENTIFIER":
-                addToXml("<identifier>" + tokenizer.identifier() + "</identifier>");
+                type = tokenizer.identifier();
+                addToXml("<identifier>" + type + "</identifier>");
                 break;
             default:
                 throw new Exception("A token which wa not an identifier or a keyword was found in a location where a type was expected, and a type may only be an identifier or a keyword.");
         }
+
+        return type;
     }
 
     /**
@@ -615,18 +691,20 @@ public class CompilationEngine {
      * @param moveToNextToken
      * @throws Exception
      */
-    public void addTokenIdentifierToXml(boolean moveToNextToken) throws Exception {
+    public String getTokenIdentifierAndAddToXml(boolean moveToNextToken) throws Exception {
         // varaible identifier
         ensureTokenType("IDENTIFIER", moveToNextToken);
-        addToXml("<identifier>" + tokenizer.identifier() + "</identifier>");
+        String identifier = tokenizer.identifier();
+        addToXml("<identifier>" + identifier + "</identifier>");
+        return identifier;
     }
 
     /**
-     * Adds current token, which 
+     * Adds current token, which is an identifier, to xml, and returns identifier.
      * @throws Exception
      */
-    public void addTokenIdentifierToXml() throws Exception {
-        addTokenIdentifierToXml(false);
+    public void getTokenIdentifierAndAddToXml() throws Exception {
+        getTokenIdentifierAndAddToXml(false);
     }
 
     /**
@@ -654,5 +732,4 @@ public class CompilationEngine {
     private void addToXml(String text) {
         xml += text;
     }
-
 }

@@ -205,7 +205,7 @@ public class JackTokenizer {
             return currentToken.charAt(0);
 
         }else{
-            throw new IllegalStateException("Current token is not a symbol!");
+            throw new IllegalStateException("Current token is not a symbol! Current token is " + currentToken);
         }
     }
 
@@ -213,14 +213,14 @@ public class JackTokenizer {
      * Return the identifier which is the current token
      * should be called only when tokenType() is IDENTIFIER
      */
-    public String identifier(){
+    public String identifier() {
 
         if (currentTokenType.equals(IDENTIFIER)){
 
             return currentToken;
 
         }else {
-            throw new IllegalStateException("Current token is not an identifier!");
+            throw new IllegalStateException("Current token is not an identifier!  Current token is " + currentToken);
         }
     }
 
